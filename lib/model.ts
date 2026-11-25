@@ -150,7 +150,6 @@ export function computeImplied(p: SnapshotProtocol, asOf: string, model: ModelCo
   growth_multiplier: number;
   maturity_multiplier: number;
 } {
-  const catMult = categoryMultiplier(p.category);
   const growth = Math.min(model.growth_cap, Math.max(model.growth_floor, p.change_7d ?? 0));
   const growthMultiplier = Number((1 + (growth / 100) * model.growth_weight).toFixed(4));
   const age = ageDays(p.listed_at, asOf);
@@ -158,13 +157,13 @@ export function computeImplied(p: SnapshotProtocol, asOf: string, model: ModelCo
   const maturityMultiplier = Number(
     (model.maturity_floor + (Math.min(Math.max(effectiveAge, 0), model.maturity_days) / model.maturity_days) * model.maturity_range).toFixed(4),
   );
-  const base = p.tvl_usd * model.base_multiple * catMult;
+  const base = p.tvl_usd * model.base_multiple;
   const raw = Math.round(base * growthMultiplier * maturityMultiplier);
   const implied_value_usd = Math.max(1, Math.min(raw, 100_000_000_000_000));
   return {
     implied_value_usd,
     age_days: age,
-    category_multiplier: catMult,
+    category_multiplier: 1.0,
     growth_multiplier: growthMultiplier,
     maturity_multiplier: maturityMultiplier,
   };
