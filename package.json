@@ -1,0 +1,7 @@
+{
+  "name": "token-launch-radar",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Token Launch Radar for make.fun",
+  "license": "MIT"
+}
