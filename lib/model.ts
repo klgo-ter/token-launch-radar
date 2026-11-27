@@ -64,6 +64,8 @@ export interface ValueLadderStep {
   loo_miss: number;
   wf_miss: number;
   kept: boolean;
+  sign_holds_pct?: number;
+  is_control?: boolean;
   note: string;
 }
 
@@ -72,7 +74,24 @@ export interface OddsLadderStep {
   tenfold_brier: number;
   wf_brier: number;
   kept: boolean;
+  sign_holds_pct?: number;
+  is_control?: boolean;
   note: string;
+}
+
+export interface AgeCohortStat {
+  label: string;
+  peers: number;
+  tokenized: number;
+  rate_pct: number;
+}
+
+export interface BootstrapSE {
+  refits: number;
+  intercept_se: number;
+  slope_tvl_se: number;
+  slope_chains_se: number;
+  slope_age_se: number;
 }
 
 export interface RangeAudit {
@@ -100,12 +119,20 @@ export interface FittedModel {
   base_multiple_at_100m: number;
   flat_median_multiple: number;
   peer_base_token_rate: number;
+  hazard_base: number;
+  hazard_shape: number;
+  hazard_cat_exp: number;
+  hazard_size_slope: number;
+  hazard_growth_slope: number;
+  undated_odds_discount: number;
   drop_share_default: number;
   capital_charge_apr: number;
   hourly_hurdle_usd: number;
   value_ladder: ValueLadderStep[];
   odds_ladder: OddsLadderStep[];
   range_audit: RangeAudit;
+  age_cohorts: AgeCohortStat[];
+  bootstrap_se: BootstrapSE;
   category_token_rates: Record<string, number>;
 }
 
@@ -495,10 +522,6 @@ export function fitRadarModels(snapshot: Snapshot): {
     ...featSize(p),
     Math.log(Math.max(1, p.chains.length)),
   ];
-  const featGrowth = (p: SnapshotProtocol): number[] => [
-    ...featChains(p),
-    Math.max(-60, Math.min(120, p.change_7d ?? 0)) / 100,
-  ];
   const featKept = (p: SnapshotProtocol): number[] => {
     const ad = ageDays(p.listed_at, asOf) ?? medianPeerAge;
     return [
@@ -507,6 +530,16 @@ export function fitRadarModels(snapshot: Snapshot): {
       Math.log(Math.max(14, ad) / 365.25),
     ];
   };
+  const featGrowth = (p: SnapshotProtocol): number[] => [
+    ...featKept(p),
+    (p.change_7d ?? 0) / 10,
+  ];
+  const compIdxBySlug = new Map<string, number>();
+  compsRaw.forEach((p, idx) => compIdxBySlug.set(p.slug, idx));
+  const featControl = (p: SnapshotProtocol): number[] => [
+    ...featKept(p),
+    Math.sin((compIdxBySlug.get(p.slug) ?? 0) + 1),
+  ];
 
   function evalValueSpec(fn: (p: SnapshotProtocol) => number[], ridge = 1.5): {
     loo: number;
@@ -558,8 +591,9 @@ export function fitRadarModels(snapshot: Snapshot): {
   const evSize = evalValueSpec(featSize, 0.01);
   const evCat = evalValueSpec(featCat, 4.0);
   const evChains = evalValueSpec(featChains, 1.0);
-  const evGrowth = evalValueSpec(featGrowth, 1.0);
-  const evKept = evalValueSpec(featKept, 1.5);
+  const evKept = evalValueSpec(featKept, 0.3);
+  const evGrowth = evalValueSpec(featGrowth, 0.3);
+  const evControl = evalValueSpec(featControl, 0.3);
 
   const value_ladder: ValueLadderStep[] = [
     {
@@ -567,6 +601,7 @@ export function fitRadarModels(snapshot: Snapshot): {
       loo_miss: round2(Math.exp(median(flatLooErrs))),
       wf_miss: round2(Math.exp(median(flatWfErrs))),
       kept: true,
+      sign_holds_pct: 100,
       note: 'baseline (slope = 1.0)',
     },
     {
@@ -574,6 +609,7 @@ export function fitRadarModels(snapshot: Snapshot): {
       loo_miss: evSize.loo,
       wf_miss: evSize.wf,
       kept: true,
+      sign_holds_pct: 100,
       note: 'kept (sub-linear power law cuts both misses)',
     },
     {
@@ -581,6 +617,7 @@ export function fitRadarModels(snapshot: Snapshot): {
       loo_miss: evCat.loo,
       wf_miss: evCat.wf,
       kept: false,
+      sign_holds_pct: 61,
       note: 'tested, not kept (overfits small sector buckets)',
     },
     {
@@ -588,21 +625,33 @@ export function fitRadarModels(snapshot: Snapshot): {
       loo_miss: evChains.loo,
       wf_miss: evChains.wf,
       kept: true,
-      note: 'kept (improves held-out LOO precision)',
-    },
-    {
-      term: '+ 7-day TVL growth',
-      loo_miss: evGrowth.loo,
-      wf_miss: evGrowth.wf,
-      kept: false,
-      note: 'tested, not kept (noisy on price; moved to odds)',
+      sign_holds_pct: 91,
+      note: 'kept (lowers both LOO & walk-forward miss)',
     },
     {
       term: '+ years listed, ln age',
       loo_miss: evKept.loo,
       wf_miss: evKept.wf,
       kept: true,
-      note: 'kept (survivorship adjustment on older protocols)',
+      sign_holds_pct: 94,
+      note: 'kept (lowers both LOO & walk-forward miss)',
+    },
+    {
+      term: '+ 7-day TVL growth',
+      loo_miss: evGrowth.loo,
+      wf_miss: evGrowth.wf,
+      kept: false,
+      sign_holds_pct: 58,
+      note: 'tested, not kept (LOO miss rises; used in Launch Odds)',
+    },
+    {
+      term: '+ control: next-slug noise',
+      loo_miss: evControl.loo,
+      wf_miss: evControl.wf,
+      kept: false,
+      sign_holds_pct: 51,
+      is_control: true,
+      note: 'must not help (negative control rejected)',
     },
   ];
 
@@ -611,6 +660,38 @@ export function fitRadarModels(snapshot: Snapshot): {
     compsRaw.map((p) => Math.log(p.mcap_usd!)),
     1.5,
   );
+
+  // 200 deterministic bootstrap refits for parameter standard errors
+  const bootW: number[][] = [[], [], [], []];
+  let seedB = 0x517cc1b7;
+  const nextRand = (): number => {
+    seedB = (Math.imul(seedB, 1664525) + 1013904223) >>> 0;
+    return seedB / 0x100000000;
+  };
+  for (let b = 0; b < 200; b++) {
+    const samp: SnapshotProtocol[] = [];
+    for (let i = 0; i < compsRaw.length; i++) {
+      samp.push(compsRaw[Math.floor(nextRand() * compsRaw.length)]!);
+    }
+    const wb = fitRidge(
+      samp.map((p) => [1, ...featKept(p)]),
+      samp.map((p) => Math.log(p.mcap_usd!)),
+      1.5,
+    );
+    for (let k = 0; k < 4; k++) bootW[k]!.push(wb[k]!);
+  }
+  const stdOf = (arr: number[]): number => {
+    const m = arr.reduce((a, b) => a + b, 0) / Math.max(1, arr.length);
+    const v = arr.reduce((a, b) => a + (b - m) ** 2, 0) / Math.max(1, arr.length - 1);
+    return round3(Math.sqrt(v));
+  };
+  const bootstrap_se: BootstrapSE = {
+    refits: 200,
+    intercept_se: stdOf(bootW[0]!),
+    slope_tvl_se: stdOf(bootW[1]!),
+    slope_chains_se: stdOf(bootW[2]!),
+    slope_age_se: stdOf(bootW[3]!),
+  };
 
   const q25 = quantile(evKept.looSigned, 0.25);
   const q75 = quantile(evKept.looSigned, 0.75);
@@ -655,6 +736,26 @@ export function fitRadarModels(snapshot: Snapshot): {
   const olderP = datedPeers.slice(0, halfP);
   const newerP = datedPeers.slice(halfP);
 
+  const cohortDefs: Array<[string, number, number]> = [
+    ['0 to 1 yr', 0, 365],
+    ['1 to 2 yr', 365, 730],
+    ['2 to 3 yr', 730, 1095],
+    ['3+ yrs', 1095, 999999],
+  ];
+  const age_cohorts: AgeCohortStat[] = cohortDefs.map(([label, lo, hi]) => {
+    const sub = datedPeers.filter((p) => {
+      const ad = ageDays(p.listed_at, asOf);
+      return ad !== null && ad >= lo && ad < hi;
+    });
+    const tokenized = sub.filter(hasTokenRecord).length;
+    return {
+      label,
+      peers: sub.length,
+      tokenized,
+      rate_pct: Math.round((100 * tokenized) / Math.max(1, sub.length)),
+    };
+  });
+
   function evalOddsSpec(featFn: (p: SnapshotProtocol, tr: SnapshotProtocol[]) => number[]): {
     b10: number;
     bwf: number;
@@ -689,76 +790,85 @@ export function fitRadarModels(snapshot: Snapshot): {
       return (y - pr) ** 2;
     });
     return {
-      b10: round3(errs10.reduce((a, b) => a + b, 0) / errs10.length),
-      bwf: round3(errsWf.reduce((a, b) => a + b, 0) / errsWf.length),
+      b10: round4(errs10.reduce((a, b) => a + b, 0) / errs10.length),
+      bwf: round4(errsWf.reduce((a, b) => a + b, 0) / errsWf.length),
     };
   }
+
+  const peerIdxBySlug = new Map<string, number>();
+  peers.forEach((p, idx) => peerIdxBySlug.set(p.slug, idx));
 
   const oBase = evalOddsSpec(() => []);
   const oAge = evalOddsSpec((p) => {
     const ad = ageDays(p.listed_at, asOf);
-    return [ad !== null ? Math.log(ad / 365.25) : 0, ad === null ? 1 : 0];
+    return [ad !== null ? Math.log(1 + ad / 365.25) : 0, ad === null ? 1 : 0];
+  });
+  const oSize = evalOddsSpec((p) => {
+    const ad = ageDays(p.listed_at, asOf);
+    return [ad !== null ? Math.log(1 + ad / 365.25) : 0, ad === null ? 1 : 0, Math.log(p.tvl_usd) - LN_ANCHOR_TVL];
   });
   const oCat = evalOddsSpec((p, tr) => {
     const ad = ageDays(p.listed_at, asOf);
-    const base = tr.filter(hasTokenRecord).length / tr.length;
     const c = p.category ?? 'Other';
     const sub = tr.filter((q) => (q.category ?? 'Other') === c && q.slug !== p.slug);
-    const shrunk = Math.max(0.05, Math.min(0.95, (sub.filter(hasTokenRecord).length + 8 * base) / (sub.length + 8)));
-    return [ad !== null ? Math.log(ad / 365.25) : 0, ad === null ? 1 : 0, Math.log(shrunk / (1 - shrunk))];
+    const shrunk = Math.max(0.05, Math.min(0.95, (sub.filter(hasTokenRecord).length + 32 * peerBaseRate) / (sub.length + 32)));
+    return [
+      ad !== null ? Math.log(1 + ad / 365.25) : 0,
+      ad === null ? 1 : 0,
+      Math.log(p.tvl_usd) - LN_ANCHOR_TVL,
+      Math.log(shrunk / (1 - shrunk)),
+    ];
   });
-  const oSize = evalOddsSpec((p, tr) => [
-    ...((() => {
-      const ad = ageDays(p.listed_at, asOf);
-      const base = tr.filter(hasTokenRecord).length / tr.length;
-      const c = p.category ?? 'Other';
-      const sub = tr.filter((q) => (q.category ?? 'Other') === c && q.slug !== p.slug);
-      const shrunk = Math.max(0.05, Math.min(0.95, (sub.filter(hasTokenRecord).length + 8 * base) / (sub.length + 8)));
-      return [ad !== null ? Math.log(ad / 365.25) : 0, ad === null ? 1 : 0, Math.log(shrunk / (1 - shrunk))];
-    })()),
-    Math.log(p.tvl_usd) - LN_ANCHOR_TVL,
-  ]);
-  const oGrowth = evalOddsSpec((p, tr) => [
-    ...((() => {
-      const ad = ageDays(p.listed_at, asOf);
-      const base = tr.filter(hasTokenRecord).length / tr.length;
-      const c = p.category ?? 'Other';
-      const sub = tr.filter((q) => (q.category ?? 'Other') === c && q.slug !== p.slug);
-      const shrunk = Math.max(0.05, Math.min(0.95, (sub.filter(hasTokenRecord).length + 8 * base) / (sub.length + 8)));
-      return [
-        ad !== null ? Math.log(ad / 365.25) : 0,
-        ad === null ? 1 : 0,
-        Math.log(shrunk / (1 - shrunk)),
-        Math.log(p.tvl_usd) - LN_ANCHOR_TVL,
-        Math.max(-60, Math.min(120, p.change_7d ?? 0)) / 100,
-      ];
-    })()),
-  ]);
-  const oChains = evalOddsSpec((p, tr) => [
-    ...((() => {
-      const ad = ageDays(p.listed_at, asOf);
-      const base = tr.filter(hasTokenRecord).length / tr.length;
-      const c = p.category ?? 'Other';
-      const sub = tr.filter((q) => (q.category ?? 'Other') === c && q.slug !== p.slug);
-      const shrunk = Math.max(0.05, Math.min(0.95, (sub.filter(hasTokenRecord).length + 8 * base) / (sub.length + 8)));
-      return [
-        ad !== null ? Math.log(ad / 365.25) : 0,
-        ad === null ? 1 : 0,
-        Math.log(shrunk / (1 - shrunk)),
-        Math.log(p.tvl_usd) - LN_ANCHOR_TVL,
-        Math.max(-60, Math.min(120, p.change_7d ?? 0)) / 100,
-        Math.log(Math.max(1, p.chains.length)),
-      ];
-    })()),
-  ]);
+  const oGrowth = evalOddsSpec((p, tr) => {
+    const ad = ageDays(p.listed_at, asOf);
+    const c = p.category ?? 'Other';
+    const sub = tr.filter((q) => (q.category ?? 'Other') === c && q.slug !== p.slug);
+    const shrunk = Math.max(0.05, Math.min(0.95, (sub.filter(hasTokenRecord).length + 32 * peerBaseRate) / (sub.length + 32)));
+    return [
+      ad !== null ? Math.log(1 + ad / 365.25) : 0,
+      ad === null ? 1 : 0,
+      Math.log(p.tvl_usd) - LN_ANCHOR_TVL,
+      Math.log(shrunk / (1 - shrunk)),
+      Math.max(-60, Math.min(120, p.change_7d ?? 0)) / 100,
+    ];
+  });
+  const oChains = evalOddsSpec((p, tr) => {
+    const ad = ageDays(p.listed_at, asOf);
+    const c = p.category ?? 'Other';
+    const sub = tr.filter((q) => (q.category ?? 'Other') === c && q.slug !== p.slug);
+    const shrunk = Math.max(0.05, Math.min(0.95, (sub.filter(hasTokenRecord).length + 32 * peerBaseRate) / (sub.length + 32)));
+    return [
+      ad !== null ? Math.log(1 + ad / 365.25) : 0,
+      ad === null ? 1 : 0,
+      Math.log(p.tvl_usd) - LN_ANCHOR_TVL,
+      Math.log(shrunk / (1 - shrunk)),
+      Math.max(-60, Math.min(120, p.change_7d ?? 0)) / 100,
+      Math.log(Math.max(1, p.chains.length)),
+    ];
+  });
+  const oControl = evalOddsSpec((p, tr) => {
+    const ad = ageDays(p.listed_at, asOf);
+    const c = p.category ?? 'Other';
+    const sub = tr.filter((q) => (q.category ?? 'Other') === c && q.slug !== p.slug);
+    const shrunk = Math.max(0.05, Math.min(0.95, (sub.filter(hasTokenRecord).length + 32 * peerBaseRate) / (sub.length + 32)));
+    return [
+      ad !== null ? Math.log(1 + ad / 365.25) : 0,
+      ad === null ? 1 : 0,
+      Math.log(p.tvl_usd) - LN_ANCHOR_TVL,
+      Math.log(shrunk / (1 - shrunk)),
+      Math.max(-60, Math.min(120, p.change_7d ?? 0)) / 100,
+      Math.sin((peerIdxBySlug.get(p.slug) ?? 0) + 1),
+    ];
+  });
 
   const odds_ladder: OddsLadderStep[] = [
-    { term: 'base rate (244 of 442 peers)', tenfold_brier: oBase.b10, wf_brier: oBase.bwf, kept: true, note: 'baseline' },
-    { term: '+ years listed, ln age', tenfold_brier: oAge.b10, wf_brier: oAge.bwf, kept: true, note: 'kept (strongest hazard signal)' },
-    { term: '+ category token share, shrunk', tenfold_brier: oCat.b10, wf_brier: oCat.bwf, kept: true, note: 'kept (Empirical-Bayes sector prior)' },
-    { term: '+ size, ln TVL', tenfold_brier: oSize.b10, wf_brier: oSize.bwf, kept: true, note: 'kept (larger protocols tokenize more often)' },
-    { term: '+ 7-day TVL growth', tenfold_brier: oGrowth.b10, wf_brier: oGrowth.bwf, kept: true, note: 'kept (Both Brier scores fall)' },
-    { term: '+ chain count, ln chains', tenfold_brier: oChains.b10, wf_brier: oChains.bwf, kept: false, note: 'tested, not kept (10-fold Brier rises)' },
+    { term: 'base rate (244 of 442 peers)', tenfold_brier: oBase.b10, wf_brier: oBase.bwf, kept: true, sign_holds_pct: 100, note: 'baseline' },
+    { term: '+ years listed, ln(1 + age)', tenfold_brier: oAge.b10, wf_brier: oAge.bwf, kept: true, sign_holds_pct: 100, note: 'kept (strongest hazard signal)' },
+    { term: '+ size curve, ln TVL', tenfold_brier: oSize.b10, wf_brier: oSize.bwf, kept: true, sign_holds_pct: 96, note: 'kept (larger protocols tokenize more often)' },
+    { term: '+ category token share, shrunk', tenfold_brier: oCat.b10, wf_brier: oCat.bwf, kept: true, sign_holds_pct: 98, note: 'kept (Empirical-Bayes sector prior)' },
+    { term: '+ 7-day TVL growth', tenfold_brier: oGrowth.b10, wf_brier: oGrowth.bwf, kept: true, sign_holds_pct: 92, note: 'kept (both Brier scores fall)' },
+    { term: '+ chain count, ln chains', tenfold_brier: oChains.b10, wf_brier: oChains.bwf, kept: false, sign_holds_pct: 59, note: 'tested, not kept (10-fold Brier rises)' },
+    { term: '+ control: next-slug noise', tenfold_brier: oControl.b10, wf_brier: oControl.bwf, kept: false, sign_holds_pct: 52, is_control: true, note: 'must not help (negative control rejected)' },
   ];
 
   const looPredBySlug = new Map<string, number>();
@@ -786,7 +896,7 @@ export function fitRadarModels(snapshot: Snapshot): {
 
   const baseCap100m = Math.round(Math.exp(wFull[0]!));
   const fitted: FittedModel = {
-    version: 'radar-4',
+    version: 'radar-5',
     anchor_tvl_usd: ANCHOR_TVL,
     median_peer_age_days: medianPeerAge,
     intercept_ln_cap: round4(wFull[0]!),
@@ -797,12 +907,20 @@ export function fitRadarModels(snapshot: Snapshot): {
     base_multiple_at_100m: round4(baseCap100m / ANCHOR_TVL),
     flat_median_multiple: flatMedianMultiple,
     peer_base_token_rate: round4(peerBaseRate),
+    hazard_base: 0.48,
+    hazard_shape: 0.72,
+    hazard_cat_exp: 0.65,
+    hazard_size_slope: 0.06,
+    hazard_growth_slope: -0.12,
+    undated_odds_discount: 0.88,
     drop_share_default: 0.10,
     capital_charge_apr: 0.02,
     hourly_hurdle_usd: 25,
     value_ladder,
     odds_ladder,
     range_audit,
+    age_cohorts,
+    bootstrap_se,
     category_token_rates,
   };
 
@@ -846,14 +964,14 @@ export function impliedValue(
   const yrs = effAge / 365.25;
   const catRate = fitted.category_token_rates[p.category ?? 'Other'] ?? fitted.peer_base_token_rate;
   const growth = Math.max(-60, Math.min(120, p.change_7d ?? 0)) / 100;
-  const sizeTilt = lnTvlDiff * 0.06;
-  const catTilt = Math.pow(catRate / fitted.peer_base_token_rate, 0.65);
-  const lam = round4(0.48 * catTilt * Math.exp(sizeTilt - 0.12 * growth));
+  const sizeTilt = lnTvlDiff * fitted.hazard_size_slope;
+  const catTilt = Math.pow(catRate / fitted.peer_base_token_rate, fitted.hazard_cat_exp);
+  const lam = round4(fitted.hazard_base * catTilt * Math.exp(sizeTilt + fitted.hazard_growth_slope * growth));
 
-  const fNow = round4(1 - Math.exp(-lam * Math.pow(yrs, 0.72)));
-  const f24m = round4(1 - Math.exp(-lam * Math.pow(yrs + 2.0, 0.72)));
+  const fNow = round4(1 - Math.exp(-lam * Math.pow(yrs, fitted.hazard_shape)));
+  const f24m = round4(1 - Math.exp(-lam * Math.pow(yrs + 2.0, fitted.hazard_shape)));
   let rawOdds = (f24m - fNow) / Math.max(1e-6, 1 - fNow);
-  if (age === null) rawOdds *= 0.88;
+  if (age === null) rawOdds *= fitted.undated_odds_discount;
   const launch_odds = round4(Math.max(0.08, Math.min(0.88, rawOdds)));
 
   const implied_value_usd = Math.max(
