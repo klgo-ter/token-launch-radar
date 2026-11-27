@@ -896,7 +896,7 @@ export function fitRadarModels(snapshot: Snapshot): {
 
   const baseCap100m = Math.round(Math.exp(wFull[0]!));
   const fitted: FittedModel = {
-    version: 'radar-5',
+    version: 'radar-7',
     anchor_tvl_usd: ANCHOR_TVL,
     median_peer_age_days: medianPeerAge,
     intercept_ln_cap: round4(wFull[0]!),
@@ -1046,6 +1046,7 @@ function planWeeksFor(age: number | null): number {
 function strategyKindFor(category: string | null): string {
   const c = (category ?? '').toLowerCase();
   if (c.includes('dex') || c.includes('amm')) return 'Liquidity & swaps';
+  if (c.includes('basis') || c.includes('synthet')) return 'Synthetic dollar & basis';
   if (c.includes('lend') || c.includes('credit')) return 'Lending & borrow loop';
   if (c.includes('cdp') || c.includes('stable') || c.includes('dual-token')) return 'Mint against collateral';
   if (c.includes('rwa')) return 'Tokenised yield asset';
@@ -1152,24 +1153,34 @@ export function farmPlan(
   const tvlM = `$${(p.tvl_usd / 1e6).toFixed(1)}M`;
   const stopM = `$${(tvlStopUsd / 1e6).toFixed(1)}M`;
   const cat = (p.category ?? '').toLowerCase();
+  const depFmt = `$${depositUsd.toLocaleString('en-US')}`;
 
-  let step1Action = `Deploy $${depositUsd.toLocaleString('en-US')} of USDC into ${p.name}'s core contract on ${primaryChain} and retain the position receipt.`;
-  let step2Action = `Execute one secondary protocol action on ${p.name} (collateral borrow, LP band check, or staking lock) so the wallet registers full product usage.`;
+  let step1Action = `Verify defillama.com/protocol/${p.slug}, run a $100 test, then deploy ${depFmt} of USDC into ${p.name}'s core contract on ${primaryChain}.`;
+  let step2Action = `Hold ${p.name}'s position receipt in self-custody on ${primaryChain} and complete one secondary protocol action to register active usage.`;
   if (cat.includes('dex')) {
-    step1Action = `Add $${depositUsd.toLocaleString('en-US')} to ${p.name}'s deepest stable or blue-chip liquidity pool on ${primaryChain} across the active fee band.`;
+    step1Action = `Verify defillama.com/protocol/${p.slug}, run a $100 test, then add ${depFmt} to ${p.name}'s deepest liquidity pool on ${primaryChain} across the active fee band.`;
     step2Action = `Route $${Math.round(depositUsd * 0.25).toLocaleString('en-US')} of swap volume through ${p.name} on ${primaryChain} so the wallet records both LP and trader activity.`;
+  } else if (cat.includes('basis') || cat.includes('synthet')) {
+    step1Action = `Verify defillama.com/protocol/${p.slug}, run a $100 test, then mint ${depFmt} of ${p.name}'s synthetic dollar on ${primaryChain} against USDC collateral.`;
+    step2Action = `Stake the minted ${p.name} synthetic asset into its native yield/points vault on ${primaryChain} without looping leverage above 1x.`;
   } else if (cat.includes('lend') || cat.includes('cdp') || cat.includes('stable')) {
-    step1Action = `Supply $${depositUsd.toLocaleString('en-US')} of USDC collateral to ${p.name} on ${primaryChain} and mint or borrow a conservative 35% stable position.`;
-    step2Action = `Stake or deposit the borrowed/minted asset in ${p.name}'s native stability or savings module on ${primaryChain} to capture dual multiplier points.`;
+    step1Action = `Verify defillama.com/protocol/${p.slug}, run a $100 test, then supply ${depFmt} of USDC collateral to ${p.name} on ${primaryChain} and borrow at most 25% LTV.`;
+    step2Action = `Deposit the borrowed asset in ${p.name}'s native stability or savings module on ${primaryChain} while keeping health factor above 1.5.`;
+  } else if (cat.includes('restak') || cat.includes('stak') || cat.includes('btc')) {
+    step1Action = `Verify defillama.com/protocol/${p.slug}, run a $100 test, then stake ${depFmt} into ${p.name}'s active delegation vault on ${primaryChain}.`;
+    step2Action = `Hold ${p.name}'s liquid staking receipt in self-custody on ${primaryChain} without looping leverage more than once.`;
+  } else if (cat.includes('curator') || cat.includes('allocator') || cat.includes('yield') || cat.includes('farm')) {
+    step1Action = `Verify defillama.com/protocol/${p.slug}, run a $100 test, then deposit ${depFmt} of USDC into ${p.name}'s flagship curated vault on ${primaryChain}.`;
+    step2Action = `Hold the vault receipt token in self-custody on ${primaryChain} and confirm underlying strategy pools carry audited contracts.`;
   } else if (cat.includes('rwa')) {
-    step1Action = `Complete ${p.name}'s onboarding eligibility check on ${primaryChain} and mint $${depositUsd.toLocaleString('en-US')} of its yield-bearing RWA token at par.`;
+    step1Action = `Verify defillama.com/protocol/${p.slug}, complete onboarding on ${primaryChain}, and mint ${depFmt} of ${p.name}'s yield-bearing RWA token at par.`;
     step2Action = `Hold the minted ${p.name} asset directly in your self-custody wallet on ${primaryChain} without re-hypothecating into unverified wrappers.`;
   }
 
   const steps: DatedFarmStep[] = [
     {
       when: 'Day 0',
-      action: `Fund a dedicated wallet on ${primaryChain} with $${depositUsd.toLocaleString('en-US')} of USDC and $${gasReserve.toFixed(2)} of native gas ($${txFee.toFixed(2)} per transaction).`,
+      action: `Fund a dedicated wallet on ${primaryChain} with ${depFmt} of USDC and $${gasReserve.toFixed(2)} of native gas ($${txFee.toFixed(2)} per transaction).`,
       cost_usd: round2(txFee),
       cost_label: `$${txFee.toFixed(2)}`,
       time_min: 15,
@@ -1193,7 +1204,7 @@ export function farmPlan(
     },
     {
       when: `Weekly x${holdWeeks}`,
-      action: `Each week for ${holdWeeks} weeks, verify pool health, record accrued points on ${p.name}'s app, and check that TVL holds near ${tvlM}.`,
+      action: `Each week for ${holdWeeks} weeks, touch the position on ${p.name}'s app, log transaction hashes, and check that TVL holds near ${tvlM}.`,
       cost_usd: weeklyCost,
       cost_label: `$${weeklyCost.toFixed(2)}`,
       time_min: weeklyMin,
@@ -1209,7 +1220,7 @@ export function farmPlan(
     },
     {
       when: `Day ${sc.holdDays}`,
-      action: `Unwind the $${depositUsd.toLocaleString('en-US')} position on ${primaryChain}, redeem to USDC, and transfer principal back; past week ${holdWeeks} marginal dilution exceeds weekly cost.`,
+      action: `Unwind the ${depFmt} position on ${primaryChain}, revoke contract approvals, and redeem to USDC; past week ${holdWeeks} dilution exceeds weekly cost.`,
       cost_usd: entryCost,
       cost_label: `$${entryCost.toFixed(2)}`,
       time_min: 20,
@@ -1217,7 +1228,7 @@ export function farmPlan(
     },
     {
       when: 'Budget',
-      action: `Budget $${sc.gasFees.toFixed(2)} gas/fees + $${sc.capCharge.toFixed(2)} capital charge (2% APR on $${depositUsd.toLocaleString('en-US')} for ${sc.holdDays}d, ${sc.workHours.toFixed(1)}h work) against $${sc.expectedDrop.toFixed(2)} expected drop: net ${sc.netUsd >= 0 ? '+' : ''}$${sc.netUsd.toFixed(2)} (${sc.netPerHour >= 0 ? '+' : ''}$${sc.netPerHour.toFixed(2)}/h, ${verdict}).`,
+      action: `Slice $${sc.expectedDrop.toFixed(2)} - $${sc.gasFees.toFixed(2)} gas/fees - $${sc.capCharge.toFixed(2)} capital charge (2% APR on ${depFmt} for ${sc.holdDays}d, ${sc.workHours.toFixed(1)}h work) = net ${sc.netUsd >= 0 ? '+' : ''}$${sc.netUsd.toFixed(2)} (${sc.netPerHour >= 0 ? '+' : ''}$${sc.netPerHour.toFixed(2)}/h: ${verdict}; clears $25/h above ${breakevenDrop}% drop).`,
       cost_usd: sc.capCharge,
       cost_label: `$${sc.capCharge.toFixed(2)}`,
       time_min: 0,
