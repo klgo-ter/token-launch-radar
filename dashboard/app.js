@@ -272,12 +272,26 @@ function topbar() {
   return el('header', { class: 'topbar' },
     el('div', { class: 'brand-row' },
       el('span', { class: 'brand-title', text: 'Token Launch Radar' }),
-      el('span', { class: 'brand-sub', text: 'pre-token protocols valued from their own snapshot record · fitted on 92 traded anchors & 442 stand-alone peers' })),
+      el('span', { class: 'brand-sub', text: 'pre-token protocols valued from their own snapshot record · fitted on 92 traded anchors, 442 peers' })),
     el('div', { class: 'top-meta' },
       el('span', { class: 'meta-pill', text: 'DefiLlama ' + D.as_of }),
       el('span', { class: 'meta-pill', text: 'model ' + D.model_version + ' · refitted in browser' }),
       el('span', { class: 'meta-pill', text: 'checksum ' + D.board_checksum }),
       btn(S.compact ? 'Show Evidence ▾' : 'Compact View ▴', function () { S.compact = !S.compact; render(); }, 'action-btn', S.compact)));
+}
+
+function headline() {
+  var top = D.rows.slice(0, 6);
+  function card(r) {
+    var fp = farmPlan(r);
+    return el('div', { class: 'kpi-card hl-card', onclick: function () { S.view = 'detail'; S.slug = r.slug; render(); } },
+      el('span', { class: 'kpi-head', text: '#' + r.rank + ' · ' + (r.tier === 'watchlist' ? 'WATCHLIST' : r.tier === 'offlist' ? 'OFF-LIST' : 'EARLY') + ' · ' + r.name }),
+      el('div', { class: 'kpi-val', text: usd(r.implied_value_usd) }),
+      el('span', { class: 'kpi-sub', text: 'P25-P75 ' + usd(r.p25_usd) + ' - ' + usd(r.p75_usd) + ' · ' + fp.verdict + ' ' + susd(fp.net_per_hour_usd) + '/h' }));
+  }
+  return el('section', null,
+    el('div', { class: 'hl-title' }, el('span', { text: 'TOP 6 PRE-TOKEN BY IMPLIED VALUE' }), el('span', { class: 'fn-tag', text: 'impliedValue()' })),
+    el('section', { class: 'kpi-grid hl-grid' }, top.map(card)));
 }
 
 function kpis() {
@@ -292,8 +306,6 @@ function kpis() {
       'newer caps inside P25-P75 (stated 50%) & P10-P90 (80%)'),
     card('Token Odds vs Base, Brier', el('div', { class: 'kpi-val' }, fO.wf_brier.toFixed(4) + ' ', el('span', { class: 'vs', text: 'vs ' + bO.wf_brier.toFixed(4) })),
       'walk-forward across 442 peers; 10-fold ' + fO.tenfold_brier.toFixed(4) + ' vs ' + bO.tenfold_brier.toFixed(4)),
-    card('Terms Kept + Noise Gate', el('div', { class: 'kpi-val', text: '3 of 6 · 4 of 6' }),
-      'every kept term lowers both blind tests; noise controls rejected'),
     card('Worth Farming (>= $25/h)', el('div', { class: 'kpi-val', style: 'color:var(--green)', text: c.FARM + ' of ' + D.board_size }),
       'net of gas, spread & 2% capital charge (' + c.MARGINAL + ' marginal, ' + c.SKIP + ' skip)'),
     card('Watchlist & Full Ledger', el('div', { class: 'kpi-val', text: D.watchlist_size + ' / ' + D.watchlist_size }),
@@ -318,14 +330,12 @@ function accounting(a) {
     el('div', { class: 'formula-banner', text:
       'impliedValue(row) = launchValue(row) × launchOdds(row).  launchValue = exp(' + f.intercept_ln_cap + ' + ' + f.slope_ln_tvl +
       '·ln(TVL/$100M) ' + f.slope_ln_chains + '·ln(chains) ' + f.slope_ln_age_yrs + '·ln(years_listed))  [$' +
-      (f.base_cap_at_100m_usd / 1e6).toFixed(2) + 'M at $100M TVL].  launchOdds = (F(t+2y) - F(t)) / (1 - F(t)) from peer age, category token rate, TVL and 7-day growth.' }),
+      (f.base_cap_at_100m_usd / 1e6).toFixed(2) + 'M at $100M TVL].  launchOdds = (F(t+2y)-F(t))/(1-F(t)) from peer age, category rate, TVL and 7-day growth.' }),
     el('div', { class: 'sec-head' },
       el('div', { class: 'sec-title' }, el('span', { text: 'PROTOCOL ACCOUNTING' }), el('span', { class: 'fn-tag', text: 'ledgerOf()' }),
         el('span', { style: 'text-transform:none;font-weight:400;color:var(--muted)', text:
-          'all ' + L.total_protocols + ' snapshot protocols in exactly one group: ' + L.ranked_total + ' ranked pre-token, ' +
-          L.token_all_records + ' already record a token (' + L.token_traded_comps + ' stand-alone priced comps), ' + L.out_no_token +
-          ' tokenless excluded by house rules (' + L.out_no_token_bridge + ' bridge, ' + L.out_no_token_staking + ' staking, ' +
-          L.out_no_token_exchange + ' exchange, ' + L.out_no_token_versioned + ' versioned/wrapped)' }))),
+          L.total_protocols + ' protocols, each in one group: ' + L.ranked_total + ' ranked pre-token, ' +
+          L.token_all_records + ' recording a token (' + L.token_traded_comps + ' priced comps), ' + L.out_no_token + ' tokenless by house rule' }))),
     el('div', { class: 'acct-bar' }, ac.groups.map(function (g) {
       return el('div', { class: 'acct-seg', style: 'width:' + ((g.count / ac.total) * 100).toFixed(2) + '%;background:' + g.color, title: g.label + ': ' + g.count });
     })),
@@ -336,10 +346,8 @@ function accounting(a) {
     el('div', { class: 'integrity-strip' },
       el('span', { class: 'chk-pill', text: '✓ this table = board.json: ' + a.matched + ' of ' + a.total + ' rows recomputed here' }),
       el('span', { class: 'chk-pill', text: '✓ ranks 1-' + a.total + ' in order, values never rise' }),
-      el('span', { class: 'chk-pill', text: '✓ totals equal: $' + a.sumImplied.toLocaleString('en-US') }),
-      el('span', { class: 'chk-pill', text: '✓ checksum ' + a.checksum + ' = main.ts' }),
-      el('span', { class: 'chk-pill', text: '✓ watchlist ' + D.watchlist_size + ' of ' + D.watchlist_size + ' ranked' }),
-      el('span', { class: 'chk-pill', text: '✓ ledger ' + L.total_protocols + ' of ' + L.total_protocols + ' protocols' }),
+      el('span', { class: 'chk-pill', text: '✓ total $' + a.sumImplied.toLocaleString('en-US') + ' · checksum ' + a.checksum + ' = main.ts' }),
+      el('span', { class: 'chk-pill', text: '✓ watchlist ' + D.watchlist_size + ' of ' + D.watchlist_size + ' · ledger ' + L.total_protocols + ' protocols' }),
       el('span', { class: 'chk-pill', text: '✓ ' + D.board_size + ' plans × 7 costed, timed steps · 0 protocol names in code' })));
 }
 
@@ -366,16 +374,16 @@ function evidence() {
   return el('section', { class: 'evidence-grid' },
     el('div', { class: 'ev-card' },
       el('div', { class: 'sec-title' }, el('span', { text: '1. Value if a token launches' }), el('span', { class: 'fn-tag', text: 'valueLadder()' })),
-      el('div', { class: 'ev-sub', text: 'Kept only when it lowers BOTH leave-one-out and walk-forward miss across 92 priced comps' }),
+      el('div', { class: 'ev-sub', text: 'Kept only if it lowers both blind misses across 92 comps' }),
       ladderTable(valueLadder(f), 'v'),
       el('div', { class: 'ev-foot', text: 'Fitted ± bootstrap s.e. (' + se.refits + ' refits): $100M base $' + (f.base_cap_at_100m_usd / 1e6).toFixed(1) +
         'M; ln(TVL) +' + f.slope_ln_tvl + ' ± ' + se.slope_tvl_se + '; ln(chains) ' + f.slope_ln_chains + ' ± ' + se.slope_chains_se +
         '; ln(age) ' + f.slope_ln_age_yrs + ' ± ' + se.slope_age_se + '.' })),
     el('div', { class: 'ev-card' },
       el('div', { class: 'sec-title' }, el('span', { text: '2. Token launch odds (24m hazard)' }), el('span', { class: 'fn-tag', text: 'oddsLadder()' })),
-      el('div', { class: 'ev-sub', text: 'Out-of-sample Brier across 442 stand-alone peers (244 with a token, 198 pre-token)' }),
+      el('div', { class: 'ev-sub', text: 'Out-of-sample Brier across 442 peers (244 with a token, 198 pre-token)' }),
       ladderTable(oddsLadder(f), 'o'),
-      el('div', { class: 'ev-foot', text: '7-day growth fails the LOO test on market-cap pricing, so valueLadder() drops it; it lowers both Brier scores in oddsLadder(), so launchOdds() keeps it.' })),
+      el('div', { class: 'ev-foot', text: '7-day growth fails the LOO test, so valueLadder() drops it; it lowers both Brier scores in oddsLadder(), so launchOdds() keeps it.' })),
     el('div', { class: 'ev-card' },
       el('div', { class: 'sec-title' }, el('span', { text: '3. Range honesty & peer cohort record' }), el('span', { class: 'fn-tag', text: 'rangeOf()' })),
       el('table', { class: 'ev-table' },
@@ -709,6 +717,7 @@ function render() {
   root.innerHTML = '';
   var w = el('div', { class: 'wrap' });
   w.appendChild(topbar());
+  if (S.view !== 'detail') w.appendChild(headline());
   if (S.view === 'detail') {
     w.appendChild(detailView());
   } else {
